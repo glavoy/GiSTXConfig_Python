@@ -1,1 +1,645 @@
-# GiSTXConfig_Python
+# GiSTXConfig_Python - Survey Configuration Generator
+
+Cross-platform Python implementation of GiSTConfigX.
+It reads an Excel data dictionary and generates:
+- XML file(s) for questionnaire worksheets
+- `survey_manifest.gistx`
+- `<surveyId>.zip` package (XML + manifest + optional CSV files)
+- `gistlogfile.txt` validation/processing log
+
+## Table of Contents
+
+- [Overview](#overview)
+- [How It Works](#how-it-works)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Creating the Excel Data Dictionary](#creating-the-excel-data-dictionary)
+  - [Worksheet Naming Convention](#worksheet-naming-convention)
+  - [Required Column Structure](#required-column-structure)
+  - [Column Specifications](#column-specifications)
+    - [FieldName](#fieldname)
+    - [QuestionType](#questiontype)
+    - [FieldType](#fieldtype)
+    - [QuestionText](#questiontext)
+    - [MaxCharacters](#maxcharacters)
+    - [Responses](#responses)
+    - [Input Masking (Text Fields)](#input-masking-text-fields)
+    - [Automatic Calculations](#automatic-calculations)
+    - [LowerRange](#lowerrange)
+    - [UpperRange](#upperrange)
+    - [LogicCheck](#logiccheck)
+    - [DontKnow](#dontknow)
+    - [Refuse](#refuse)
+    - [NA](#na)
+    - [Skip](#skip)
+    - [Comments](#comments)
+- [The CRFS Worksheet](#the-crfs-worksheet)
+- [Output Files](#output-files)
+- [Error Handling and Validation](#error-handling-and-validation)
+
+---
+
+## Overview
+
+The processor reads worksheets ending in `_dd` or `_xml`, validates each question row, and generates XML definitions plus a survey manifest.
+
+### Inputs
+
+- Excel workbook with questionnaire worksheets (`*_dd`/`*_xml`)
+- `crfs` worksheet (form relationships and metadata)
+- `config.json`
+
+### Outputs
+
+- One XML file per questionnaire worksheet
+- `survey_manifest.gistx`
+- `<surveyId>.zip`
+- `gistlogfile.txt`
+
+---
+
+## How It Works
+
+1. Load `config.json`
+2. Open workbook
+3. Validate questionnaire worksheets
+4. If no errors, generate XML files
+5. If no errors, build `survey_manifest.gistx` from `crfs`
+6. If no errors, create `<surveyId>.zip`
+7. Always write `gistlogfile.txt`
+
+If validation errors are found, XML/manifest/zip generation is skipped.
+
+---
+
+## Installation
+
+### Requirements
+
+- Python 3.10+
+- `pip`
+
+### Install
+
+```bash
+pip install -r requirements.txt
+```
+
+### Run
+
+```bash
+python3 main.py --config config.json
+```
+
+Exit code:
+- `0` success
+- `1` error(s)
+
+---
+
+## Configuration
+
+Create/edit `config.json` in `/Users/glavoy/apps/idrc/GiSTXConfig_Python`:
+
+```json
+{
+  "excelFile": "/absolute/path/to/data_dictionary.xlsx",
+  "csvFiles": "/absolute/path/to/csv/folder",
+  "outputPath": "/absolute/path/to/output",
+  "surveyName": "PRISM CSS 2026-01-05",
+  "surveyId": "prism_css_2026_01_05"
+}
+```
+
+### Configuration Parameters
+
+| Parameter | Required | Description |
+|---|---|---|
+| `excelFile` | Yes | Full path to Excel data dictionary |
+| `csvFiles` | No | Folder containing CSV files for dynamic responses; all `*.csv` added to zip |
+| `outputPath` | Yes | Directory for zip and log output |
+| `surveyName` | Yes | Human-readable survey name |
+| `surveyId` | Yes | Survey identifier, used for `databaseName` and zip filename |
+
+Notes:
+- `databaseName` in manifest is auto-generated as `<surveyId>.sqlite`
+- Generated XML + manifest are temporary files and are deleted after a successful zip
+- `gistlogfile.txt` remains in `outputPath`
+
+---
+
+## Creating the Excel Data Dictionary
+
+### Worksheet Naming Convention
+
+- Questionnaire worksheets: names ending in `_dd` or `_xml`
+- CRFS worksheet: exactly `crfs`
+- Other worksheets: ignored
+
+### Required Column Structure
+
+Each questionnaire worksheet must have these 14 headers in row 1, exact order and spelling:
+
+1. `FieldName`
+2. `QuestionType`
+3. `FieldType`
+4. `QuestionText`
+5. `MaxCharacters`
+6. `Responses`
+7. `LowerRange`
+8. `UpperRange`
+9. `LogicCheck`
+10. `DontKnow`
+11. `Refuse`
+12. `NA`
+13. `Skip`
+14. `Comments`
+
+Important:
+- Merged rows are ignored as non-question rows
+- Non-merged rows after header are parsed as questions
+
+### Column Specifications
+
+#### FieldName
+
+Rules:
+- Lowercase only
+- Must not start with number
+- Must not start with underscore
+- Allowed chars: letters, numbers, underscore
+- No spaces
+- Unique in worksheet (except information rows are excluded from duplicate check)
+
+Examples:
+- Valid: `age`, `participant_id`, `hh_member_count`
+- Invalid: `Age`, `_id`, `2ndvisit`, `first name`
+
+#### QuestionType
+
+Valid values:
+- `radio`
+- `combobox`
+- `checkbox`
+- `text`
+- `date`
+- `information`
+- `automatic`
+- `button`
+
+Compatibility rules:
+- `radio` => `FieldType` must be `integer`
+- `checkbox` => `FieldType` must be `text`
+- `date` => `FieldType` must be `date` or `datetime`
+
+#### FieldType
+
+Valid values:
+- `text`
+- `datetime`
+- `date`
+- `phone_num`
+- `integer`
+- `text_integer`
+- `text_decimal`
+- `text_id`
+- `n/a`
+- `hourmin`
+
+#### QuestionText
+
+Rules:
+- Required unless `QuestionType=automatic`
+- Any text allowed
+- Placeholder references like `[[fieldname]]` are preserved into XML as text
+
+#### MaxCharacters
+
+Rules:
+- Optional generally, but required for:
+- `FieldType` in `text`, `text_integer`, `phone_num`
+- except `QuestionType` in `automatic`, `checkbox`, `combobox`
+- Numeric only (or `=number` format)
+- Range: `1..2000`
+
+Examples:
+- `80`
+- `10`
+- `=3`
+
+#### Responses
+
+Used by `radio`, `checkbox`, `combobox`, and `automatic` (calc syntax).
+
+##### Static Responses
+
+Format: one response per line, `value:text`
+
+Example:
+```text
+1:Yes
+2:No
+3:Don't Know
+```
+
+Validation rules:
+- Must contain exactly one `:`
+- No leading space before value
+- No space immediately after `:` (`1: Yes` is invalid)
+- Values must be unique
+
+##### Dynamic Responses
+
+Start with `source:` and provide key-value lines.
+
+CSV example:
+```text
+source:csv
+file:mrcvillage.csv
+filter:region = [[region]]
+filter:mrccode = [[mrccode]]
+display:villagename
+value:vcode
+distinct:true
+empty_message:No villages found
+dont_know:-7, Don't know
+not_in_list:-99, Not in list
+```
+
+Database example:
+```text
+source:database
+table:hh_members
+filter:hhid = [[hhid]]
+filter:sex = 1
+display:participantsname
+value:uniqueid
+empty_message:No records found
+```
+
+Supported dynamic keys:
+- `source` (`csv` or `database`)
+- `file` (CSV source)
+- `table` (DB source)
+- `filter`
+- `display`
+- `value`
+- `distinct` (`true`/`false`)
+- `empty_message`
+- `dont_know` (`value,label`)
+- `not_in_list` (`value,label`)
+
+Supported filter operators:
+- `=`
+- `!=`
+- `<>`
+- `>`
+- `<`
+- `>=`
+- `<=`
+
+##### Response XML Behavior
+
+- Static => `<responses><response .../></responses>`
+- CSV => `<responses source='csv' file='...'>...`
+- Database => `<responses source='database' table='...'>...`
+
+#### Input Masking (Text Fields)
+
+Mask syntax in `Responses` column:
+
+```text
+mask:R21-[0-9][0-9][0-9]-[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]
+```
+
+Rules:
+- Only valid for `QuestionType=text`
+- Stored as `<mask value="..." />`
+
+#### Automatic Calculations
+
+Calculation syntax in `Responses` column, only for `QuestionType=automatic`.
+
+Built-in automatic field names that are exempt from calc parsing:
+- `starttime`, `stoptime`, `uniqueid`, `swver`, `survey_id`, `lastmod`
+
+Supported calc types:
+
+1. `constant`
+```text
+calc:constant
+value:1
+```
+
+2. `lookup`
+```text
+calc:lookup
+field:participant_name
+```
+
+3. `query`
+```text
+calc:query
+sql:SELECT count(*) FROM members WHERE hhid = @hhid
+param:@hhid = hhid
+```
+
+4. `math`
+```text
+calc:math
+operator:+
+part:lookup age1
+part:lookup age2
+```
+
+5. `concat`
+```text
+calc:concat
+separator:, 
+part:lookup first_name
+part:lookup last_name
+```
+
+6. `case`
+```text
+calc:case
+when:age < 18 => Minor
+when:age >= 18 => Adult
+else:Unknown
+```
+
+7. `age_from_date`
+```text
+calc:age_from_date
+field:dob
+value:today
+```
+
+8. `age_at_date`
+```text
+calc:age_at_date
+field:dob
+value:visit_date
+separator:-
+```
+
+9. `date_offset`
+```text
+calc:date_offset
+field:vx_dose1_date
+value:+28d
+```
+
+10. `date_diff`
+```text
+calc:date_diff
+field:admission_date
+value:today
+unit:d
+```
+
+Validation enforced per type:
+- Required keys (`sql`, `field`, `value`, etc.)
+- Math operator must be one of `+ - * /`
+- `math` needs at least 2 parts
+- `concat` needs at least 1 part
+- `date_offset` value must match `[+/-][number][dwmy]`
+- `date_diff` unit must be one of `d,w,m,y`
+
+#### LowerRange
+
+For non-date questions:
+- Numeric only (integer or decimal)
+
+For date questions:
+- Required
+- Allowed values:
+- `0`, `+0d`, `-0d`
+- relative format `[+/-][number][d|w|m|y]`
+- fixed date `yyyy-mm-dd`
+
+Examples:
+- `0`
+- `-1y`
+- `+6m`
+- `2023-01-01`
+
+#### UpperRange
+
+Same validation as `LowerRange`.
+
+#### LogicCheck
+
+One or more lines in format:
+
+```text
+expression; 'error message'
+```
+
+Examples:
+```text
+age >= 18; 'Participant must be 18 or older'
+end_date > start_date; 'End date must be after start date'
+```
+
+Multiple checks: one line per check.
+
+Unique check format:
+```text
+unique; 'This ID has already been used'
+```
+
+Validation rules:
+- Must include semicolon
+- Message must be in single quotes
+- Expression must include operators/logic
+- Referenced fields must exist
+- Referenced fields must appear before current row
+
+#### DontKnow
+
+Valid values:
+- `True`
+- `False`
+- blank (treated as not set)
+
+If `True`, XML includes `<dont_know>-7</dont_know>`.
+
+#### Refuse
+
+Valid values:
+- `True`
+- `False`
+- blank
+
+If `True`, XML includes `<refuse>-8</refuse>`.
+
+#### NA
+
+Valid values:
+- `True`
+- `False`
+- blank
+
+If `True`, XML includes `<na>-6</na>`.
+
+#### Skip
+
+One or more lines.
+
+Supported prefixes:
+- `preskip:`
+- `postskip:`
+
+Examples:
+```text
+preskip: if age < 18, skip to comments
+postskip: if pregnant = 2, skip to next_section
+```
+
+Contains operators for checkbox-style values are supported:
+```text
+postskip: if symptoms 'contains' 1, skip to fever
+postskip: if symptoms 'does not contain' 9, skip to cough
+```
+
+Validation rules:
+- Must contain `:` and a single comma section split
+- Must use `preskip` or `postskip`
+- Check field must exist and appear before current row
+- Target field must exist and appear after current row
+- Cannot skip to current question
+
+#### Comments
+
+Ignored by processor. Use for notes/documentation.
+
+---
+
+## The CRFS Worksheet
+
+Worksheet name must be exactly `crfs`.
+
+Expected columns (read positionally from left to right):
+1. `display_order`
+2. `tablename`
+3. `displayname`
+4. `primarykey`
+5. `idconfig` (JSON)
+6. `isbase`
+7. `linkingfield`
+8. `parenttable`
+9. `incrementfield`
+10. `requireslink`
+11. `repeat_count_field`
+12. `auto_start_repeat`
+13. `repeat_enforce_count`
+14. `display_fields`
+15. `entry_condition`
+
+`idconfig` JSON structure:
+
+```json
+{
+  "prefix": "GL",
+  "fields": [
+    {"name": "community", "length": 2},
+    {"name": "village", "length": 2}
+  ],
+  "incrementLength": 3
+}
+```
+
+`crfs` rows are written into `survey_manifest.gistx` under `crfs`.
+
+---
+
+## Output Files
+
+### XML files
+
+Generated for each worksheet ending in `_dd` or `_xml`.
+
+Filename mapping:
+- `hh_info_dd` -> `hh_info.xml`
+- `followup_xml` -> `followup.xml`
+
+Each XML ends with synthetic information question:
+- `fieldname='end_of_questions'`
+
+### `survey_manifest.gistx`
+
+Contains:
+- `surveyName`
+- `surveyId`
+- `databaseName` (`<surveyId>.sqlite`)
+- `xmlFiles` list
+- `crfs` entries
+
+### `<surveyId>.zip`
+
+Contains:
+- generated XML files
+- `survey_manifest.gistx`
+- all `*.csv` from `csvFiles` folder (if configured)
+
+### `gistlogfile.txt`
+
+Always written. Includes:
+- per-worksheet checks
+- warnings/errors
+- packaging messages
+- end-of-log marker
+
+---
+
+## Error Handling and Validation
+
+### Common Validation Errors
+
+- Invalid/missing headers
+- FieldName format violations
+- Invalid QuestionType/FieldType values
+- QuestionType/FieldType mismatch (`radio`/`checkbox`/`date`)
+- Malformed static responses
+- Duplicate static response keys
+- Invalid dynamic response keys/values
+- Invalid calc syntax/required fields missing
+- Invalid numeric/date range values
+- LogicCheck syntax/reference errors
+- Skip syntax/reference/ordering errors
+- Duplicate non-information field names
+- Invalid `DontKnow`/`Refuse`/`NA` values (must be `True`/`False` when set)
+- XML syntax validation failure after generation
+
+### Validation Process Order (per worksheet)
+
+1. Header validation
+2. Row parsing + field-level validations
+3. Logic field-reference validation
+4. Skip field-reference validation
+5. Required MaxCharacters validation
+6. Duplicate FieldName validation
+
+If any errors are found, generation is halted.
+
+### Troubleshooting
+
+- `Excel file not found`: fix `excelFile` path in config
+- Missing outputs: check `gistlogfile.txt` for first validation error
+- No CSV in zip: verify `csvFiles` exists and contains `*.csv`
+- Manifest not generated: ensure `crfs` sheet exists and workbook has no prior validation errors
+
+---
+
+## File Layout
+
+All Python source files are in `/Users/glavoy/apps/idrc/GiSTXConfig_Python`:
+- `main.py` (CLI entry)
+- `processor.py` (orchestration)
+- `excel_reader.py` (worksheet parsing + validation)
+- `xml_generator.py` (XML writing)
+- `crf_reader.py` (CRFS parsing)
+- `json_generator.py` (manifest writing)
+- `models.py` (data models/enums)
+- `config.json` (runtime config)
