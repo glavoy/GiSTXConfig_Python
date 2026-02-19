@@ -99,7 +99,7 @@ Exit code:
 
 ## Configuration
 
-Create/edit `config.json` in `/Users/glavoy/apps/idrc/GiSTXConfig_Python`:
+Create/edit `config.json` in the project root:
 
 ```json
 {
@@ -242,11 +242,15 @@ Example:
 3:Don't Know
 ```
 
-Validation rules:
+Applies to: `radio`, `checkbox`, `combobox`
+
+Validation rules (enforced for `radio` and `checkbox`):
 - Must contain exactly one `:`
 - No leading space before value
 - No space immediately after `:` (`1: Yes` is invalid)
 - Values must be unique
+
+`combobox` also uses this format but does not apply strict format validation.
 
 ##### Dynamic Responses
 
@@ -297,6 +301,10 @@ Supported filter operators:
 - `<`
 - `>=`
 - `<=`
+
+Filter values support dynamic field references using `[[fieldname]]` notation. At runtime, the GiSTX application substitutes the current value of the named field, allowing responses to be filtered based on earlier answers.
+
+Example: `filter: region = [[region_field]]` filters where the `region` column equals the current value of the `region_field` question.
 
 ##### Response XML Behavior
 
@@ -485,11 +493,21 @@ If `True`, XML includes `<na>-6</na>`.
 
 #### Skip
 
-One or more lines.
+One or more lines (one skip rule per line).
 
 Supported prefixes:
-- `preskip:`
-- `postskip:`
+- `preskip:` — evaluated before the question is rendered
+- `postskip:` — evaluated after the user enters a response
+
+Required format:
+```
+[preskip|postskip]: if [checkfield] [condition] [value], skip to [targetfield]
+```
+
+- `checkfield` — field whose value is tested; must be defined before the current question
+- `condition` — comparison operator; must be one of: `=`, `>`, `>=`, `<`, `<=`, `<>`
+- `value` — value to compare against (no quotes needed for numbers)
+- `targetfield` — last word on the line; must be a field defined after the current question
 
 Examples:
 ```text
@@ -497,18 +515,21 @@ preskip: if age < 18, skip to comments
 postskip: if pregnant = 2, skip to next_section
 ```
 
-Contains operators for checkbox-style values are supported:
+Checkbox `contains` operators:
 ```text
 postskip: if symptoms 'contains' 1, skip to fever
 postskip: if symptoms 'does not contain' 9, skip to cough
 ```
 
+- Use `'contains'` (with single quotes) as the condition for checkbox fields
+- `does not contain` is written without quotes and expands to 7 tokens in the condition section
+
 Validation rules:
-- Must contain `:` and a single comma section split
-- Must use `preskip` or `postskip`
-- Check field must exist and appear before current row
-- Target field must exist and appear after current row
-- Cannot skip to current question
+- Must start with `preskip:` or `postskip:`
+- Must have exactly one comma separating the condition section from the skip-to section
+- `checkfield` must exist and appear before current row
+- `targetfield` must exist and appear after current row
+- Cannot skip to the current question itself
 
 #### Comments
 
@@ -518,26 +539,31 @@ Ignored by processor. Use for notes/documentation.
 
 ## The CRFS Worksheet
 
-Worksheet name must be exactly `crfs`.
+Worksheet name must be exactly `crfs`. Columns are read positionally (left to right); column headers in the sheet are ignored.
 
-Expected columns (read positionally from left to right):
-1. `display_order`
-2. `tablename`
-3. `displayname`
-4. `primarykey`
-5. `idconfig` (JSON)
-6. `isbase`
-7. `linkingfield`
-8. `parenttable`
-9. `incrementfield`
-10. `requireslink`
-11. `repeat_count_field`
-12. `auto_start_repeat`
-13. `repeat_enforce_count`
-14. `display_fields`
-15. `entry_condition`
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `display_order` | integer | Order in which this form appears in the navigation menu |
+| 2 | `tablename` | string | Database table name where this form's data is stored |
+| 3 | `displayname` | string | Human-readable form name shown to the user |
+| 4 | `primarykey` | string | Name of the primary key field for this form's table |
+| 5 | `idconfig` | JSON | Configuration for auto-generated ID values (see below) |
+| 6 | `isbase` | integer | `1` = root/base form, `0` = related form |
+| 7 | `linkingfield` | string | Field in this form that links it to the parent record |
+| 8 | `parenttable` | string | Table name of the parent form (for hierarchical forms) |
+| 9 | `incrementfield` | string | Field used for auto-incrementing part of a composite ID |
+| 10 | `requireslink` | integer | `1` = a parent record must exist before this form can be entered |
+| 11 | `repeat_count_field` | string | Field whose value controls how many repeat instances are created |
+| 12 | `auto_start_repeat` | integer | `1` = automatically create repeat instances without user action |
+| 13 | `repeat_enforce_count` | integer | `1` = enforce that exactly `repeat_count_field` instances are completed |
+| 14 | `display_fields` | string | Comma-separated field names to display in the form summary/list view |
+| 15 | `entry_condition` | string | Expression that must evaluate to true before this form can be entered |
 
-`idconfig` JSON structure:
+All columns are optional (null values are omitted from the manifest).
+
+### `idconfig` JSON structure
+
+Used when the primary key is a composite ID built from field values plus an auto-increment counter:
 
 ```json
 {
@@ -549,6 +575,10 @@ Expected columns (read positionally from left to right):
   "incrementLength": 3
 }
 ```
+
+- `prefix` — fixed string prepended to the ID
+- `fields` — array of field names and their character lengths contributing to the ID
+- `incrementLength` — number of digits for the auto-increment portion
 
 `crfs` rows are written into `survey_manifest.gistx` under `crfs`.
 
@@ -634,12 +664,12 @@ If any errors are found, generation is halted.
 
 ## File Layout
 
-All Python source files are in `/Users/glavoy/apps/idrc/GiSTXConfig_Python`:
-- `main.py` (CLI entry)
-- `processor.py` (orchestration)
-- `excel_reader.py` (worksheet parsing + validation)
-- `xml_generator.py` (XML writing)
-- `crf_reader.py` (CRFS parsing)
-- `json_generator.py` (manifest writing)
-- `models.py` (data models/enums)
-- `config.json` (runtime config)
+All Python source files are in the project root:
+- `main.py` — CLI entry point
+- `processor.py` — orchestration
+- `excel_reader.py` — worksheet parsing and validation
+- `xml_generator.py` — XML generation
+- `crf_reader.py` — CRFS worksheet parsing
+- `json_generator.py` — manifest writing
+- `models.py` — data models and enums
+- `config.json` — runtime configuration
